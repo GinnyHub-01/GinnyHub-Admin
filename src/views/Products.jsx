@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Edit3, Package, Plus, Search, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Edit3, ImagePlus, Package, Plus, Search, Star, Trash2, X } from 'lucide-react';
 import { Badge, Chips, ConfirmDialog, EmptyState, ErrorState, Skeleton, money, useEscape, useLoad, useToast } from '../ui.jsx';
 
 const CATEGORIES = ['Mesh Hair', 'Hair Cream', 'Hair Oil', 'Bundles', 'Accessories'];
@@ -13,10 +13,11 @@ const toForm = p => (!p ? blank : {
   badge: p.badge || '', featured: !!p.featured, active: p.active !== false,
   autoPriceIncrease: !!p.autoPriceIncrease, priceIncreaseAmount: p.priceIncreaseAmount ? String(p.priceIncreaseAmount) : '', priceIncreaseEveryDays: p.priceIncreaseEveryDays ? String(p.priceIncreaseEveryDays) : '30',
 });
+const parseList = v => [...new Set(String(v || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean))];
 const okUrl = u => /^(https?:\/\/|\/)/i.test(u);
 
 function validateForm(f) {
-  const price = Number(f.price); const stock = Number(f.stock); const gallery = f.images.split('\n').map(s => s.trim()).filter(Boolean);
+  const price = Number(f.price); const stock = Number(f.stock); const gallery = parseList(f.images);
   if (!f.name.trim()) return 'Enter a product name.';
   if (f.price === '' || !Number.isFinite(price) || price < 0) return 'Enter a valid price.';
   if (f.compareAtPrice !== '' && !(Number(f.compareAtPrice) > price)) return 'The "was" price must be higher than the price.';
@@ -28,7 +29,7 @@ function validateForm(f) {
 function toBody(f) {
   return {
     name: f.name.trim(), category: f.category, price: Number(f.price), compareAtPrice: f.compareAtPrice === '' ? null : Number(f.compareAtPrice),
-    stock: Number(f.stock), image: f.image.trim(), images: f.images.split('\n').map(s => s.trim()).filter(Boolean),
+    stock: Number(f.stock), image: f.image.trim(), images: parseList([f.image, f.images].join('\n')),
     description: f.description.trim(), badge: f.badge.trim(), featured: f.featured, active: f.active, autoPriceIncrease: f.autoPriceIncrease, priceIncreaseAmount: Number(f.priceIncreaseAmount || 0), priceIncreaseEveryDays: Math.max(1, Number(f.priceIncreaseEveryDays || 30)),
   };
 }
@@ -86,6 +87,60 @@ export default function Products({ api, params }) {
   </section>;
 }
 
+// Multi-image gallery: upload several files at once, add links, pick the main image, remove any.
+function GalleryField({ f, set, api, setError }) {
+  const [uploading, setUploading] = useState(false);
+  const [link, setLink] = useState('');
+  const list = parseList([f.image, f.images].join('\n'));
+  const main = f.image.trim() || list[0] || '';
+  const save = (urls, newMain) => { set('images', urls.join('\n')); set('image', newMain && urls.includes(newMain) ? newMain : (urls[0] || '')); };
+
+  async function onFiles(e) {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    if (files.length + list.length > 10) { setError('You can add up to 10 images per product.'); return; }
+    setUploading(true); setError('');
+    try {
+      const urls = [];
+      for (const file of files) { // one request per file so a single bad/large image can't fail the batch
+        const fd = new FormData(); fd.append('files', file);
+        const d = await api('/admin/uploads/images', { method: 'POST', body: fd });
+        urls.push(...(d.urls || []));
+      }
+      save([...new Set([...list, ...urls])], main);
+    } catch (err) { setError(err.message); }
+    setUploading(false);
+  }
+  function addLink() {
+    const u = link.trim(); if (!u) return;
+    if (!okUrl(u)) { setError('Image links must start with http:// or https://'); return; }
+    save([...new Set([...list, u])], main); setLink(''); setError('');
+  }
+
+  return <div className="field gallery-field">
+    <span>Product images <small className="hint">({list.length}/10) • first/starred image is the main one</small></span>
+    <div className="gallery-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: 10, margin: '8px 0' }}>
+      {list.map(u => <div key={u} style={{ position: 'relative', border: u === main ? '2px solid #64158e' : '1px solid #ddd', borderRadius: 10, overflow: 'hidden' }}>
+        <img src={u} alt="" style={{ width: '100%', aspectRatio: '1/1', objectFit: 'cover', display: 'block' }} />
+        <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4 }}>
+          <button type="button" title="Make main image" onClick={() => save(list, u)} style={{ padding: 4, borderRadius: 6, lineHeight: 0 }}><Star size={14} fill={u === main ? 'currentColor' : 'none'} /></button>
+          <button type="button" title="Remove image" onClick={() => save(list.filter(x => x !== u), main)} style={{ padding: 4, borderRadius: 6, lineHeight: 0 }}><Trash2 size={14} /></button>
+        </div>
+      </div>)}
+      <label style={{ display: 'grid', placeItems: 'center', aspectRatio: '1/1', border: '2px dashed #bbb', borderRadius: 10, cursor: 'pointer', textAlign: 'center', fontSize: 12, padding: 6 }}>
+        <span><ImagePlus size={22} /><br />{uploading ? 'Uploading…' : 'Add photos'}</span>
+        <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple disabled={uploading} onChange={onFiles} style={{ display: 'none' }} />
+      </label>
+    </div>
+    <div style={{ display: 'flex', gap: 8 }}>
+      <input value={link} onChange={e => setLink(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addLink(); } }} placeholder="Or paste an image link https://…" />
+      <button type="button" className="ghost" onClick={addLink}>Add link</button>
+    </div>
+    <small className="hint">JPG, PNG, WEBP or GIF • up to 10 images • 10MB each. Hold Ctrl/Cmd or Shift to select several at once.</small>
+  </div>;
+}
+
 // Shared fields for both the "Create product" page and the "Edit product" modal.
 function ProductFields({ f, set, api, setError }) {
   return <>
@@ -99,22 +154,7 @@ function ProductFields({ f, set, api, setError }) {
       <label className="field">Was price<input type="number" step="0.01" min="0" value={f.compareAtPrice} onChange={e => set('compareAtPrice', e.target.value)} placeholder="optional" /></label>
       <label className="field">Stock<input type="number" step="1" min="0" value={f.stock} onChange={e => set('stock', e.target.value)} /></label>
     </div>
-    <label className="field">Main image link<input value={f.image} onChange={e => set('image', e.target.value)} placeholder="https://…" /></label>
-    <label className="field">Upload images from device
-      <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple onChange={async e => {
-        const files = e.target.files;
-        if (!files?.length) return;
-        try {
-          const d = await api('/admin/uploads/images', { method: 'POST', body: (() => { const fd = new FormData(); [...files].forEach(file => fd.append('files', file)); return fd; })() });
-          set('image', d.urls[0] || f.image);
-          set('images', [...(f.images ? f.images.split('\\n').filter(Boolean) : []), ...d.urls].join('\\n'));
-        } catch (err) { setError(err.message); }
-        finally { e.target.value = ''; }
-      }} />
-      <small className="hint">JPG, PNG, WEBP or GIF • up to 10 images • 10MB each</small>
-    </label>
-    {f.image.trim() && okUrl(f.image.trim()) && <img className="preview" src={f.image.trim()} alt="Preview" onError={e => { e.currentTarget.style.display = 'none'; }} onLoad={e => { e.currentTarget.style.display = 'block'; }} />}
-    <label className="field">More images (one link per line)<textarea rows={3} value={f.images} onChange={e => set('images', e.target.value)} placeholder="https://…" /></label>
+    <GalleryField f={f} set={set} api={api} setError={setError} />
     <label className="field">Description<textarea rows={4} value={f.description} onChange={e => set('description', e.target.value)} /></label>
     <div className="two">
       <label className="field">Automatic price increase (GH₵)
